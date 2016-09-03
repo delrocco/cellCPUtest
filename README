@@ -1,0 +1,71 @@
+----------------------------------------
+CELL CPU TEST
+----------------------------------------
+
+A matrix multiply and image convolution on the STI cell processor (Sony Playstation 3), circa 2008.
+
+----------------------------------------
+NOTES
+----------------------------------------
+
+Both of the implementations use double buffering and all the available
+SPEs. However, they don't use vectorization (SIMD) efficiently.
+I would have liked to get that working, but didn't have the time.
+Also, convolution only supports filters of size power of two because of
+alignment issues dma-ing chunks that were not multiples of 16 bytes.
+
+---------------------------------------
+a. MATRIX MULTIPLY
+---------------------------------------
+
+matrix_spu.c        - 77  statements
+matrix_spu.assembly - 223 instructions
+
+Matrix B is transposed in the PPU to support reading rows instead
+of columns.  Each SPE works on certain rows of the solution matrix
+(SPE 0 works on rows 0,6,12,18 and SPE 1 works on 1,7,13,19 etc).
+Below is the algorithm for each SPE.
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+For each row to work on
+  dma equivalent row from input matrix A
+  For each "column" in matrix B (actually row because its transposed)
+    dma "column"
+    sum up row x column
+    set approprite element in resulting row
+  dma resulting row back to output matrix PPU
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Double buffering is done between the column reads to overlap them.  And
+I don't block on writing the result row back until the next write.
+Known issues are lack of vectorization, and since I read entire rows at
+a time the max size matrix supported is 4096x4096 since 4096x4b = 16K.
+
+---------------------------------------
+b. IMAGE CONVOLUTION
+---------------------------------------
+
+convolution_spu.c        - 124 statements
+convolution_spu.assembly - 445 instructions
+
+First of all, I flipped the algorithm to:
+ h[j,k]*a[m+j,n+k]  instead of  h[j,k]*a[m-j,n-k]
+Thus the values convolve to the top-left instead of the bottom-right.
+This makes it easier to simply pad the matrix on the right and bottom
+with zeros, instead of padding on the top and left sides, and you
+don't have to worry about an offset into the image when reading.
+Essentially the algorithm is the same, just a little easier to program.
+Each SPE only works on certain rows of tiles of the resulting image
+(SPE 0 works on tile row 0,6,12,18 and SPE 1 works on 1,7,13,19 etc).
+Below is the algorithm for each SPE.
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+First dma entire filter(h) into local store
+For each tile row in image to work on
+  For each tile in that row
+    dma a "block" from input matrix A (tile+pad to account for h overlap)
+    do convolution algorithm, set results in a local store tile
+    dma resutling tile back to PPU
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Double buffering is done between tile reads from image A.  And I don't
+block on writing resulting tiles back to image C, until the next write.
+Known issues are lack of vectorization, and it only supports filter
+size of power of two - thus 2x2, 4x4, 8x8 and 16x16.
+
